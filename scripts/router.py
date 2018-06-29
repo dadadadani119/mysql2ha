@@ -19,14 +19,14 @@ import socket
 encoding = 'utf-8'
 BUFSIZE = 1024
 
-zk_hosts = '192.168.1.1:2288,192.168.1.2:2288,192.168.1.3:2288'
+zk_hosts = '10.5.9.14:2288,10.5.9.15:2288,10.5.9.16:2288'
 ha_path = '/mysql/haproxy'
 listen_port = 9011
 
 '''cetus目录配置'''
 cetus_dir = '/usr/local/cetus'
-cetus_conf_dir = '/usr/local/cetus/config'
-cetus_proxy = False  #如果使用的haprox请设置为False，如果使用cetus请设置为True
+cetus_conf_dir = '/usr/local/cetus/conf'
+cetus_proxy = True  #如果使用的haprox请设置为False，如果使用cetus请设置为True
 ''''''
 
 class _hb:
@@ -48,7 +48,7 @@ class AlterCetus:
         :param conf:
         '''
         self.groupname = groupname
-        self._new_conf = conf if type(conf) == list else eval(conf)
+        self._new_conf = conf if type(conf) == dict else eval(conf)
         self.write_info = self._new_conf['write']
         self.read_info = self._new_conf['write'] if type(self._new_conf['read']) == list else eval(
             self._new_conf['read'])
@@ -73,22 +73,26 @@ class AlterCetus:
             if row['type'] == 'rw' and row['address'] != self.write_info:
                 cur.execute('delete from backends where backend_ndx={};'.format(row['back_index']))
         for row in backends:
-            if row['type'] == 'rw' and row['address'] == self.write_info:
+            if row['address'] == self.write_info:
                 cur.execute('update backends set state="up",type="rw" where backend_ndx={};'.format(row['back_index']))
-
+                break
+        else:
+            cur.execute('add master "{}"'.format(self.write_info))
+            cur.execute('update backends set state="up",type="rw" where address="{}";'.format(self.write_info))
         '''修改slave节点指向,不在新的可读节点中直接删除'''
-        _back_read_list = [backend['address'] for backend in backends if backend['type'] == 'ro']
-        for addr in _back_read_list:
-            if addr not in self.read_info:
-                cur.execute('delete from backends where address={};'.format(addr))
-                _back_read_list.remove(addr)
+        if self.read_info:
+            _back_read_list = [backend['address'] for backend in backends if backend['type'] == 'ro']
+            for addr in _back_read_list:
+                if addr not in self.read_info:
+                    cur.execute('delete from backends where address="{}";'.format(addr))
+                    _back_read_list.remove(addr)
 
-        for addr in self.read_info:
-            if addr in _back_read_list:
-                cur.execute('update backends set state="up",type="ro" where address={};'.format(addr))
-            else:
-                cur.execute('add slave "{}"'.format(addr))
-                cur.execute('update backends set state="up",type="ro" where address={};'.format(addr))
+            for addr in self.read_info:
+                if addr in _back_read_list:
+                    cur.execute('update backends set state="up",type="ro" where address="{}";'.format(addr))
+                else:
+                    cur.execute('add slave "{}"'.format(addr))
+                    cur.execute('update backends set state="up",type="ro" where address="{}";'.format(addr))
         try:
             cur.close()
             conn.close()
@@ -132,7 +136,7 @@ class AlterCetus:
         :return:
         '''
         self.conf = ConfigParser.ConfigParser()
-        self.conf.read('{}/{}'.format(cetus_conf_dir, self.groupname))
+        self.conf.read('{}/{}.conf'.format(cetus_conf_dir, self.groupname))
         admin_address = self.conf.get('cetus', 'admin-address')
         address_port = int(admin_address.split(':')[1])
         admin_username = self.conf.get('cetus', 'admin-username')
@@ -151,6 +155,8 @@ class CheckSer:
         pass
 
     def run(self):
+        if cetus_proxy:
+            return
         while True:
             group_list = zkHandle()
             for groupname in group_list:
@@ -359,7 +365,7 @@ class heartbeat(threading.Thread):
         info = psutil.net_if_addrs()
         for k, v in info.items():
             for item in v:
-                if item[0] == 2 and not item[1] == '127.0.0.1' and ':' not in k and '10.' not in item[1]:
+                if item[0] == 2 and not item[1] == '127.0.0.1' and ':' not in k :
                     netcard_info = item[1]
         return netcard_info.replace('.', '-')
 
